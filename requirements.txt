@@ -1,11 +1,22 @@
-numpy
-pandas
-scikit-learn
-xgboost
-hyperopt
-matplotlib
-seaborn
-rdkit
-shap
-scipy
-openpyxl
+# Core Machine Learning & Data Handling
+numpy==1.24.3
+pandas==2.0.1
+scikit-learn==1.2.2
+xgboost==1.7.5
+
+# Cheminformatics
+rdkit-pypi==2022.9.5
+scikit-fingerprints==2.0.0
+
+# Hyperparameter Optimization
+hyperopt==0.2.7
+
+# Model Interpretability
+shap==0.41.0
+
+# Visualization
+matplotlib==3.7.1
+seaborn==0.12.2
+
+# Utilities
+openpyxl==3.1.2
