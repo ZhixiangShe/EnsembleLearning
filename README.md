@@ -1,21 +1,67 @@
-# QSAR Ensemble Model
+An Ensemble Learning Framework for Pollutant Reactivity Prediction
+This repository contains the official Python implementation for the paper: "An Ensemble Learning Framework Utilizing Fusion Molecular Fingerprints for Pollutant Removal Prediction in Advanced Treatments".
 
-## 项目介绍
-基于集成学习和SHAP分析的分子性质预测模型。
+This project presents a hierarchical ensemble learning framework that integrates multi-dimensional molecular fingerprints to accurately predict the degradation kinetics of organic micropollutants (OMPs) in advanced water treatment processes, such as ozonation and zero-valent iron (ZVI) reduction.
 
-## 功能特性
-- ✅ 多指纹特征支持（ECFP、MACCS等）
-- ✅ XGBoost基础模型
-- ✅ 随机森林和Ridge回归元模型
-- ✅ SHAP可解释性分析
-- ✅ 分子结构优化
+Framework Overview
+Our framework is designed to overcome the limitations of single-fingerprint QSAR models by synergistically fusing complementary chemical information. The architecture consists of two main layers:
 
-## 安装
+Base Learners: A series of specialized XGBoost models, each trained on a distinct molecular fingerprint (e.g., ECFP, MQN, E3FP). Each base learner becomes an expert in capturing structure-reactivity relationships from a specific dimension of chemical information—spanning compositional, topological, and conformational features.
+Meta-Learner: An optimized XGBoost model that integrates the predictions (meta-features) from the top-performing, complementary base learners with key environmental parameters (e.g., pH, temperature, reactant concentration). This allows the model to learn the complex interplay between molecular structure and process conditions.
+The framework is coupled with a multi-faceted interpretability analysis using SHapley Additive exPlanations (SHAP) to elucidate the model's decision-making logic, from the influence of environmental variables down to the identification of specific atomic hotspots responsible for reactivity.
 
-### 系统要求
-- Python 3.8+
-- pip
+Framework Schematic
+(Optional: I highly recommend adding a key figure from your paper, like Figure 1, to the README. You would need to upload the image to your repository and link it here.)
 
-### 安装依赖
-```bash
+Key Features
+Multi-Dimensional Fingerprint Fusion: Supports a comprehensive suite of 15+ molecular fingerprints from scikit-fingerprints (skfp), including ECFP, MACCS, MQN, and E3FP.
+Hierarchical Ensemble Architecture: Utilizes a stacking ensemble with XGBoost base learners and a choice of meta-learners (e.g., XGBoost, RandomForest, Ridge).
+Automated Hyperparameter Tuning: Implements Bayesian optimization (hyperopt) for robust tuning of all models.
+Advanced Model Interpretation: Provides deep mechanistic insights through SHAP analysis at both the ensemble and base-learner levels.
+Ablation Studies: Quantifies the contribution of each molecular fingerprint and environmental variable to the final prediction.
+Inverse Design & Optimization: Includes functionality to predict optimal environmental conditions for maximizing pollutant degradation.
+Installation
+System Requirements
+Python 3.9+
+Conda (Recommended for managing RDKit dependencies)
+Setup and Dependencies
+It is highly recommended to create a dedicated Conda environment to ensure all dependencies are handled correctly.
+
+Clone the repository:
+bash
+复制代码
+收起
+git clone https://github.com/ZhixiangShe/EnsembleLearning.git
+cd EnsembleLearning
+复制
+Create and activate the Conda environment:
+bash
+复制代码
+收起
+conda create -n qsar_env python=3.9
+conda activate qsar_env
+复制
+Install dependencies from requirements.txt:
+The requirements.txt file contains all necessary Python packages.
+bash
+复制代码
+收起
 pip install -r requirements.txt
+复制
+Note: RDKit is included in the requirements file. If you encounter issues, it can also be installed via Conda: conda install -c conda-forge rdkit.
+How to Run
+Prepare Data: Place your dataset (e.g., O3 all new.xlsx or FeS.csv) in the data/ directory. Ensure the file contains a SMILES column and a target column (e.g., Kob).
+Configure Script: Open the main script (e.g., analysis.py) and set the file_name variable to match your dataset.
+python
+复制代码
+收起
+# CHOOSE YOUR DATASET HERE
+file_name = 'O3 all new'  # Options: 'FeS', 'O3 all new', 'biooxidation', etc.
+复制
+Execute the framework: Run the script from the terminal.
+bash
+复制代码
+收起
+python analysis.py
+复制
+The script will execute the complete workflow: data preprocessing, base model training, ensemble model construction, evaluation, and interpretation analysis. All results, trained models, and SHAP plots will be saved to a timestamped output directory (e.g., Ensemble_Models_Results_YYYYMMDD_HHMMSS/).
