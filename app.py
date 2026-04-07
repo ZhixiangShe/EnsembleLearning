@@ -7,7 +7,15 @@ import matplotlib.pyplot as plt
 from rdkit import Chem
 from rdkit.Chem import Draw
 from rdkit.Chem.Draw import SimilarityMaps
+# --- 新增的除错代码 ---
+st.warning("🕵️ Debugging Info (File System Check):")
+st.write("1. Current directory path:", os.getcwd())
+st.write("2. Files in current directory:", os.listdir('.'))
 
+if os.path.exists('deploy_models'):
+    st.write("3. Files inside 'deploy_models':", os.listdir('deploy_models'))
+else:
+    st.error("🚨 The folder 'deploy_models' DOES NOT EXIST in the current directory!")
 # ==========================================
 # 页面配置
 # ==========================================
