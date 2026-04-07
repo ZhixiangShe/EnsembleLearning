@@ -5,24 +5,17 @@ import pickle
 import os
 import matplotlib.pyplot as plt
 from rdkit import Chem
+from rdkit.Chem import AllChem  # 用于生成 3D 构象
 from rdkit.Chem import Draw
 from rdkit.Chem.Draw import SimilarityMaps
-# --- 新增的除错代码 ---
-st.warning("🕵️ Debugging Info (File System Check):")
-st.write("1. Current directory path:", os.getcwd())
-st.write("2. Files in current directory:", os.listdir('.'))
 
-if os.path.exists('deploy_models'):
-    st.write("3. Files inside 'deploy_models':", os.listdir('deploy_models'))
-else:
-    st.error("🚨 The folder 'deploy_models' DOES NOT EXIST in the current directory!")
 # ==========================================
 # 页面配置
 # ==========================================
 st.set_page_config(page_title="QSAR/QSPR Intelligent Platform", layout="wide")
 
 # ==========================================
-# 加载模型 (缓存以提高网页加载速度)
+# 1. 加载模型 (强力除错与多路径兼容)
 # ==========================================
 @st.cache_resource(show_spinner="Loading model files...")
 def load_model_assets(dataset_name):
@@ -42,31 +35,48 @@ def load_model_assets(dataset_name):
         target_path = path_in_root
         
     if target_path is None:
-        st.error(f"❌ 依然找不到文件！请检查大小写。")
+        st.error(f"❌ Cannot find model file '{file_map[dataset_name]}'. Please check GitHub repository structure.")
         return None
         
     try:
-        # st.info(f"✅ 成功找到文件所在路径: {target_path}，正在尝试读取...")
         with open(target_path, 'rb') as f:
             assets = pickle.load(f)
         return assets
     except EOFError:
-        st.error(f"❌ 文件读取失败 (EOFError)！这通常是因为你的 .pkl 文件在 GitHub 上被存成了 Git LFS 指针。请确保上传的是真实的二进制文件。")
+        st.error("❌ EOFError: Model file corrupted. This usually happens if the .pkl file is too large and saved as a Git LFS pointer instead of the actual file.")
         return None
     except ModuleNotFoundError as e:
-        st.error(f"❌ 缺少依赖库导致模型无法解包！请检查 requirements.txt: {e}")
+        st.error(f"❌ Missing required library: {e}. Please add it to requirements.txt.")
         return None
     except Exception as e:
-        st.error(f"❌ 读取模型时发生未知错误: {type(e).__name__} - {str(e)}")
+        st.error(f"❌ Error loading model: {type(e).__name__} - {str(e)}")
         return None
 
 # ==========================================
-# 交互式预测核心函数 (Stacking 模型)
+# 2. 交互式预测核心函数 (支持 3D 构象生成)
 # ==========================================
 def predict_smiles(smiles, env_values_dict, assets):
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
+    # 1. 生成基础 2D 分子（保留用于网页上画漂亮的平面图）
+    mol_2d = Chem.MolFromSmiles(smiles)
+    if mol_2d is None:
         return None, "Invalid SMILES"
+    
+    # 2. 生成带有 3D 坐标的分子（用于底层 RDF 等 3D 特征计算）
+    try:
+        mol_3d = Chem.AddHs(mol_2d) # 加氢
+        embed_res = AllChem.EmbedMolecule(mol_3d, randomSeed=42) # 嵌入 3D 坐标
+        if embed_res == -1:
+            return None, "Failed to generate 3D structure for this SMILES."
+        
+        AllChem.MMFFOptimizeMolecule(mol_3d) # MMFF94 力场优化
+        
+        # 满足特殊指纹包（如 mordred）的要求：显式赋予 conf_id 属性
+        mol_3d.conf_id = 0
+        if hasattr(mol_3d, 'SetIntProp'):
+            mol_3d.SetIntProp("conf_id", 0)
+            
+    except Exception as e:
+        return None, f"Error generating 3D conformer: {str(e)}"
     
     base_preds = []
     top_fp_names = assets['top_fp_names']
@@ -80,7 +90,8 @@ def predict_smiles(smiles, env_values_dict, assets):
         model = processor['model']
         
         try:
-            fp_raw = fp_calc.transform([mol])
+            # 注意：这里必须传入 mol_3d 进行计算
+            fp_raw = fp_calc.transform([mol_3d])
             fp = np.asarray(fp_raw.toarray() if hasattr(fp_raw, "toarray") else fp_raw)
             fp_processed = imputer.transform(scaler.transform(fp))
             pred = model.predict(fp_processed)[0]
@@ -96,10 +107,11 @@ def predict_smiles(smiles, env_values_dict, assets):
     meta_model = assets['meta_model']
     final_pred = meta_model.predict(meta_input)[0]
     
-    return final_pred, mol
+    # 返回预测结果，同时返回没有氢原子的 2D 分子，以确保网页上的分子图清爽美观
+    return final_pred, mol_2d
 
 # ==========================================
-# UI 布局
+# 3. UI 布局
 # ==========================================
 st.title("QSAR/QSPR Intelligent Modeling & Prediction Platform")
 st.markdown("A Visual Machine Learning Workflow for QSAR/QSPR Studies in Chemistry")
@@ -109,23 +121,21 @@ col_left, col_right = st.columns([1, 1])
 # ------------- 左侧栏：项目配置 -------------
 with col_left:
     st.header("Module 1: Project Configuration")
-    
-    # 【修改点2】将选项卡更新为 O3 和 ZVI
     dataset_choice = st.radio("Select Dataset Model", ["O3", "ZVI"], horizontal=True)
     st.button("Run Modeling Pipeline", disabled=True, help="Models are pre-trained for web deployment.")
     
- # 加载选中的模型
+    # 加载选中的模型
     assets = load_model_assets(dataset_choice)
     
     st.header("Model Training Results")
-    st.info("Here you can place static images (Heatmaps, Scatter plots) generated from your local training phase.")
+    st.info("Static images (Heatmaps, Scatter plots) generated from local training can be displayed here.")
     # 如果你有训练结果图片，可以取消下面这行的注释并修改路径
     # st.image("results/performance_plot.png")
 
 # ------------- 右侧栏：预测与可视化 -------------
 with col_right:
     if assets is None:
-        st.error(f"Model file 'model_assets_{dataset_choice}.pkl' not found. Please upload it to 'deploy_models' folder.")
+        st.warning("Please resolve the model loading error to continue.")
     else:
         # --- 1. Interactive Prediction ---
         st.header("Interactive Analysis & Prediction")
@@ -138,21 +148,23 @@ with col_right:
             cols = st.columns(len(assets['env_feature_names']))
             for i, env_name in enumerate(assets['env_feature_names']):
                 # 默认值: pH给7.0, 其他给25.0
-                env_inputs[env_name] = cols[i].number_input(env_name, value=7.0 if env_name.lower() == 'ph' else 25.0)
+                default_val = 7.0 if env_name.lower() == 'ph' else 25.0
+                env_inputs[env_name] = cols[i].number_input(env_name, value=default_val)
                 
         if st.button("Predict Kob Value", type="primary"):
-            with st.spinner("Calculating Prediction..."):
-                pred_value, mol = predict_smiles(target_smiles, env_inputs, assets)
+            with st.spinner("Generating 3D conformer & Calculating Prediction..."):
+                pred_value, result_mol = predict_smiles(target_smiles, env_inputs, assets)
                 if pred_value is not None:
                     c1, c2 = st.columns([1, 1])
                     with c1:
-                        img = Draw.MolToImage(mol, size=(300, 300))
+                        # 画 2D 图
+                        img = Draw.MolToImage(result_mol, size=(300, 300))
                         st.image(img, caption="2D Molecular Structure")
                     with c2:
                         st.success("Prediction Complete!")
                         st.metric(label="Predicted Kob Value", value=f"{pred_value:.4f}")
                 else:
-                    st.error(mol)
+                    st.error(result_mol)
 
         st.divider()
 
@@ -169,7 +181,8 @@ with col_right:
                     try:
                         # 获取在本地训练的 ECFP 代理模型
                         if 'ecfp_surrogate' not in assets:
-                            st.error("ECFP Surrogate model not found in the .pkl file. Please ensure you ran the surrogate training step locally.")
+                            st.warning("⚠️ ECFP Surrogate model not found in the .pkl file. "
+                                       "Atomic SHAP is disabled. Please ensure you ran the surrogate training step locally.")
                         else:
                             ecfp_model = assets['ecfp_surrogate']
                             
