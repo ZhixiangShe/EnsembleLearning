@@ -24,20 +24,40 @@ st.set_page_config(page_title="QSAR/QSPR Intelligent Platform", layout="wide")
 # ==========================================
 # 加载模型 (缓存以提高网页加载速度)
 # ==========================================
-@st.cache_resource
+@st.cache_resource(show_spinner="Loading model files...")
 def load_model_assets(dataset_name):
-    # 【修改点1】更新字典映射，匹配你的实际 pkl 文件名
     file_map = {
         "O3": "model_assets_O3.pkl",
         "ZVI": "model_assets_ZVI.pkl"
     }
-    model_path = os.path.join("deploy_models", file_map[dataset_name])
     
+    # 自动探测路径：优先找 deploy_models 文件夹，其次找根目录
+    path_in_folder = os.path.join("deploy_models", file_map[dataset_name])
+    path_in_root = file_map[dataset_name]
+    
+    target_path = None
+    if os.path.exists(path_in_folder):
+        target_path = path_in_folder
+    elif os.path.exists(path_in_root):
+        target_path = path_in_root
+        
+    if target_path is None:
+        st.error(f"❌ 依然找不到文件！请检查大小写。")
+        return None
+        
     try:
-        with open(model_path, 'rb') as f:
+        # st.info(f"✅ 成功找到文件所在路径: {target_path}，正在尝试读取...")
+        with open(target_path, 'rb') as f:
             assets = pickle.load(f)
         return assets
-    except FileNotFoundError:
+    except EOFError:
+        st.error(f"❌ 文件读取失败 (EOFError)！这通常是因为你的 .pkl 文件在 GitHub 上被存成了 Git LFS 指针。请确保上传的是真实的二进制文件。")
+        return None
+    except ModuleNotFoundError as e:
+        st.error(f"❌ 缺少依赖库导致模型无法解包！请检查 requirements.txt: {e}")
+        return None
+    except Exception as e:
+        st.error(f"❌ 读取模型时发生未知错误: {type(e).__name__} - {str(e)}")
         return None
 
 # ==========================================
