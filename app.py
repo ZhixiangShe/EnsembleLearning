@@ -85,7 +85,7 @@ assets = load_model_assets(dataset_choice)
 st.divider()
 
 if assets is not None:
-    st.header("Module 2: Interactive Analysis & Prediction")
+    st.header("Module 2: Interactive Prediction")
     target_smiles = st.text_input("Enter Target Molecule SMILES", "CC(C)(C)C1=NN=C(S1)NC(=O)NC")
     env_inputs = {}
     if len(assets['env_feature_names']) > 0:
@@ -106,7 +106,7 @@ if assets is not None:
 
     st.divider()
 
-    st.header("Module 3: Molecular Interpretability (Atomic SHAP)")
+    st.header("Module 3: Molecular Interpretability")
     shap_smiles = st.text_input("Enter SMILES for SHAP", target_smiles, key="shap_input")
     if st.button("Generate Atomic Contribution Plot"):
         mol_shap = Chem.MolFromSmiles(shap_smiles)
@@ -123,13 +123,7 @@ st.divider()
 # ==========================================
 # 4. Module 4: 自动网格搜索热图 & Top3 Stacking 集成
 # ==========================================
-st.header("Module 4: AutoML Profiling & Stacking Ensemble")
-st.markdown("""
-This module automatically evaluates **6 Machine Learning algorithms** across **14 Molecular Fingerprints (2D & 3D)**.
-1. It generates an interactive $R^2$ Heatmap.
-2. It automatically selects the **Top 3 Models** (Model + FP combinations).
-3. It builds a **5-Fold Stacking Ensemble** using the Top 3 base models.
-""")
+st.header("Module 4: Ensemble Learning for New Data")
 
 uploaded_file = st.file_uploader("Upload dataset (CSV)", type=["csv"])
 
