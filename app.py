@@ -10,6 +10,7 @@ from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 import plotly.express as px
 import streamlit.components.v1 as components
 import xgboost as xgb
+from PIL import Image
 
 from rdkit import Chem
 from rdkit.Chem import AllChem, rdMolDescriptors
@@ -110,7 +111,7 @@ if assets is not None:
     st.divider()
 
     # ==========================================
-    # 模块 3: 顶刊级分子解释性 (SHAP & Fragment)
+    # 模块 3: 顶刊级分子解释性 (同时渲染两张图)
     # ==========================================
     st.header("Module 3: Molecular Interpretability")
     shap_smiles = st.text_input("Enter SMILES for Interpretability Analysis", target_smiles, key="shap_input")
@@ -119,117 +120,121 @@ if assets is not None:
         mol_shap = Chem.MolFromSmiles(shap_smiles)
         if mol_shap and 'ecfp_surrogate' in assets:
             with st.spinner("Analyzing Atomic & Fragment Contributions..."):
-                tab1, tab2 = st.tabs(["🔴🔵 Atomic Contribution Plot", "📊 Fragment Feature Importance"])
                 
-                # --- 子模块 1: 高清原子贡献图 (还原目标图 1) ---
-                with tab1:
-                    def get_pred_for_shap(fp_vect): 
-                        return float(assets['ecfp_surrogate'].predict(np.array(fp_vect).reshape(1, -1))[0])
-                    
-                    # 提取每个原子的权重
-                    weights = SimilarityMaps.GetAtomicWeightsForModel(
-                        mol_shap, 
-                        lambda m, i: SimilarityMaps.GetMorganFingerprint(m, atomId=i, radius=2, nBits=2048), 
-                        get_pred_for_shap
-                    )
-                    
-                    # 设置以0为中心的红蓝颜色映射 (Red-White-Blue)
-                    norm = mcolors.TwoSlopeNorm(vmin=min(weights)-1e-5, vcenter=0, vmax=max(weights)+1e-5)
-                    cmap = cm.get_cmap('bwr') # Blue-White-Red
-                    
-                    # 生成原子颜色字典
-                    atom_colors = {}
-                    for i, w in enumerate(weights):
-                        # 如果权重极小，则不着色
-                        if abs(w) > 1e-4:
-                            atom_colors[i] = cmap(norm(w))[:3]
-                            
-                    # 使用 rdMolDraw2D 绘制纯白底色高清图
-                    d2d = rdMolDraw2D.MolDraw2DSVG(500, 400)
-                    opts = d2d.drawOptions()
-                    opts.clearBackground = True
-                    opts.setBackgroundColour((1, 1, 1, 1)) # 纯白背景
-                    opts.highlightRadius = 0.4
-                    
-                    rdMolDraw2D.PrepareAndDrawMolecule(
-                        d2d, mol_shap, 
-                        highlightAtoms=list(atom_colors.keys()), 
-                        highlightAtomColors=atom_colors
-                    )
-                    d2d.FinishDrawing()
-                    
-                    # 渲染 SVG
-                    components.html(f"<div style='text-align: center;'>{d2d.GetDrawingText()}</div>", width=600, height=420)
-                    
-                    # 绘制对应的渐变色带 (Colorbar)
-                    fig_cb, ax_cb = plt.subplots(figsize=(6, 0.8))
-                    fig_cb.subplots_adjust(bottom=0.5)
-                    cb = plt.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), cax=ax_cb, orientation='horizontal')
-                    cb.set_label('SHAP Contribution (Negative vs Positive)', fontsize=10)
-                    st.pyplot(fig_cb)
+                # --- 图 1: 高清原子贡献图 ---
+                st.subheader("🔴🔵 Atomic Contribution Plot")
+                def get_pred_for_shap(fp_vect): 
+                    return float(assets['ecfp_surrogate'].predict(np.array(fp_vect).reshape(1, -1))[0])
+                
+                weights = SimilarityMaps.GetAtomicWeightsForModel(
+                    mol_shap, 
+                    lambda m, i: SimilarityMaps.GetMorganFingerprint(m, atomId=i, radius=2, nBits=2048), 
+                    get_pred_for_shap
+                )
+                
+                norm = mcolors.TwoSlopeNorm(vmin=min(weights)-1e-5, vcenter=0, vmax=max(weights)+1e-5)
+                cmap = cm.get_cmap('bwr')
+                
+                atom_colors = {}
+                for i, w in enumerate(weights):
+                    if abs(w) > 1e-4:
+                        atom_colors[i] = cmap(norm(w))[:3]
+                        
+                d2d = rdMolDraw2D.MolDraw2DSVG(500, 400)
+                opts = d2d.drawOptions()
+                opts.clearBackground = True
+                opts.setBackgroundColour((1, 1, 1, 1))
+                opts.highlightRadius = 0.4
+                
+                rdMolDraw2D.PrepareAndDrawMolecule(
+                    d2d, mol_shap, 
+                    highlightAtoms=list(atom_colors.keys()), 
+                    highlightAtomColors=atom_colors
+                )
+                d2d.FinishDrawing()
+                
+                components.html(f"<div style='text-align: center;'>{d2d.GetDrawingText()}</div>", width=600, height=420)
+                
+                fig_cb, ax_cb = plt.subplots(figsize=(6, 0.6))
+                fig_cb.subplots_adjust(bottom=0.5)
+                cb = plt.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), cax=ax_cb, orientation='horizontal')
+                cb.set_label('SHAP Contribution (Negative vs Positive)', fontsize=10)
+                st.pyplot(fig_cb)
+                
+                st.markdown("<br>", unsafe_allow_html=True) # 增加间距
 
-                # --- 子模块 2: 带有分子片段的柱状图 (还原目标图 2) ---
-                with tab2:
-                    # 获取该分子的 ECFP 激活位点 (BitInfo)
-                    bit_info = {}
-                    fp = AllChem.GetMorganFingerprintAsBitVect(mol_shap, radius=2, nBits=2048, bitInfo=bit_info)
-                    active_bits = list(bit_info.keys())
+                # --- 图 2: 带有分子片段的柱状图 ---
+                st.subheader("📊 Fragment Feature Importance")
+                
+                bit_info = {}
+                fp = AllChem.GetMorganFingerprintAsBitVect(mol_shap, radius=2, nBits=2048, bitInfo=bit_info)
+                active_bits = list(bit_info.keys())
+                
+                base_pred = get_pred_for_shap(fp)
+                bit_contributions = {}
+                fp_arr = np.array(fp)
+                
+                for bit in active_bits:
+                    fp_mutated = fp_arr.copy()
+                    fp_mutated[bit] = 0
+                    mutated_pred = get_pred_for_shap(fp_mutated)
+                    contrib = base_pred - mutated_pred
+                    # 过滤掉几乎为0的特征，让图表更干净
+                    if abs(contrib) > 1e-4:
+                        bit_contributions[bit] = contrib
                     
-                    # 使用局部扰动法 (Local Perturbation) 计算每个片段的贡献度
-                    base_pred = get_pred_for_shap(fp)
-                    bit_contributions = {}
+                # 提取排名前 6 的片段
+                top_bits = sorted(bit_contributions.keys(), key=lambda x: abs(bit_contributions[x]), reverse=True)[:6]
+                
+                if len(top_bits) > 0:
+                    top_vals = [bit_contributions[b] for b in top_bits]
+                    top_labels = [str(b) for b in top_bits]
                     
-                    fp_arr = np.array(fp)
-                    for bit in active_bits:
-                        fp_mutated = fp_arr.copy()
-                        fp_mutated[bit] = 0 # 移除该特征
-                        mutated_pred = get_pred_for_shap(fp_mutated)
-                        # 贡献度 = 包含该特征的预测值 - 移除该特征的预测值
-                        bit_contributions[bit] = base_pred - mutated_pred
-                        
-                    # 提取贡献绝对值排名前 6 的片段
-                    top_bits = sorted(bit_contributions.keys(), key=lambda x: abs(bit_contributions[x]), reverse=True)[:6]
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    bars = ax.bar(top_labels, top_vals, color='#5D98C8', width=0.4, edgecolor='white')
                     
-                    if len(top_bits) > 0:
-                        top_vals = [bit_contributions[b] for b in top_bits]
-                        top_labels = [str(b) for b in top_bits]
-                        
-                        fig, ax = plt.subplots(figsize=(10, 6))
-                        
-                        # 绘制渐变蓝色柱状图
-                        bars = ax.bar(top_labels, top_vals, color='#5D98C8', width=0.5, edgecolor='white')
-                        
-                        # 在柱子上方/下方叠加片段图片
-                        for i, bit in enumerate(top_bits):
-                            try:
-                                # 渲染 RDKit 的局部片段图
-                                img = Draw.DrawMorganBit(mol_shap, bit, bit_info, useSVG=False)
-                                img_arr = np.array(img)
+                    # === 动态且宽裕的 Y 轴范围计算 (解决图片被裁剪的核心) ===
+                    y_max = max(max(top_vals), 0)
+                    y_min = min(min(top_vals), 0)
+                    y_range = y_max - y_min if (y_max - y_min) > 0 else 0.1
+                    
+                    # 强行给 Y 轴顶部和底部预留 50% 的空间放图片
+                    ax.set_ylim(y_min - y_range * 0.5, y_max + y_range * 0.5)
+                    
+                    for i, bit in enumerate(top_bits):
+                        try:
+                            # 渲染片段图像
+                            img = Draw.DrawMorganBit(mol_shap, int(bit), bit_info, useSVG=False)
+                            if img is not None:
+                                img_rgb = img.convert('RGB')
+                                img_arr = np.array(img_rgb)
                                 
-                                # 将图片作为 Annotation 嵌入到 Matplotlib 中
-                                imagebox = OffsetImage(img_arr, zoom=0.5)
-                                # 根据柱子正负决定图片位置
-                                offset_y = max(abs(np.array(top_vals))) * 0.15
-                                y_pos = top_vals[i] + offset_y if top_vals[i] >= 0 else top_vals[i] - offset_y
+                                # 加入图片框，zoom 缩放比例
+                                imagebox = OffsetImage(img_arr, zoom=0.6)
                                 
-                                ab = AnnotationBbox(imagebox, (i, y_pos), frameon=False, pad=0)
+                                # 根据柱子是正还是负，决定图片浮动的位置
+                                sign = 1 if top_vals[i] >= 0 else -1
+                                offset = y_range * 0.15 # 距离柱顶 15% 的空隙
+                                y_pos = top_vals[i] + (sign * offset)
+                                
+                                # bboxprops 增加了一个带阴影的圆角方框，让图片非常清晰
+                                ab = AnnotationBbox(
+                                    imagebox, (i, y_pos), 
+                                    frameon=True, 
+                                    bboxprops=dict(edgecolor='gray', boxstyle='round,pad=0.2', facecolor='white', alpha=0.9)
+                                )
                                 ax.add_artist(ab)
-                            except:
-                                pass
-                                
-                        ax.set_ylabel("Feature Importance (Contribution)")
-                        ax.set_xlabel("ECFP Feature (Bit ID)")
-                        ax.set_title("Top Substructure Contributions for Current Molecule")
-                        
-                        # 动态扩展 Y 轴范围以容纳图片
-                        y_min, y_max = min(top_vals), max(top_vals)
-                        ax.set_ylim(y_min - abs(y_min)*0.5 - 0.1, y_max + abs(y_max)*0.5 + 0.1)
-                        ax.axhline(0, color='black', linewidth=0.8, linestyle='--')
-                        ax.grid(axis='y', linestyle=':', alpha=0.7)
-                        
-                        st.pyplot(fig)
-                    else:
-                        st.warning("Molecule is too simple to generate fragment importance.")
+                        except Exception as e:
+                            pass
+                            
+                    ax.set_ylabel("Feature Importance (Contribution)")
+                    ax.set_xlabel("ECFP Feature (Bit ID)")
+                    ax.axhline(0, color='black', linewidth=1.0, linestyle='--')
+                    ax.grid(axis='y', linestyle=':', alpha=0.7)
+                    
+                    st.pyplot(fig)
+                else:
+                    st.info("Molecule is too simple or contributions are negligible.")
 
 st.divider()
 
@@ -241,7 +246,6 @@ st.markdown("Upload your dataset, select algorithms & features, and build a cust
 
 uploaded_file = st.file_uploader("Upload dataset (CSV)", type=["csv"])
 
-# 提取器字典定义
 FP_DICT = {
     "MQNs": lambda m: np.array(rdMolDescriptors.CalcMQNs(m)),
     "MACCS": lambda m: np.array(rdMolDescriptors.GetMACCSKeysFingerprint(m)),
@@ -256,7 +260,6 @@ FP_DICT = {
     "USR_3D": lambda m: np.array(rdMolDescriptors.GetUSR(m)) if hasattr(rdMolDescriptors, 'GetUSR') else np.zeros(12),
 }
 
-# 基模型字典定义
 MODELS_DICT = {
     "XGB": xgb.XGBRegressor(n_estimators=50, max_depth=4, random_state=42, n_jobs=-1),
     "RF": RandomForestRegressor(n_estimators=50, random_state=42, n_jobs=-1),
@@ -297,7 +300,6 @@ if uploaded_file is not None:
             st.error("⚠️ Please select at least one Base Model and one Fingerprint!")
         else:
             df_clean = df_custom.dropna(subset=[smi_col, tgt_col]).reset_index(drop=True)
-            
             need_3d = any("_3D" in fp for fp in selected_fps)
             
             st.write(f"Step 1/5: Generating Molecular Conformers (3D Optimization: {need_3d})...")
