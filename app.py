@@ -3,11 +3,12 @@ import pandas as pd
 import numpy as np
 import pickle
 import os
-import matplotlib.pyplot as plt
+import streamlit.components.v1 as components  # 用于高清显示 SVG
 from rdkit import Chem
-from rdkit.Chem import AllChem  # 用于生成 3D 构象
+from rdkit.Chem import AllChem
 from rdkit.Chem import Draw
 from rdkit.Chem.Draw import SimilarityMaps
+from rdkit.Chem.Draw import rdMolDraw2D       # 引入现代绘图引擎
 
 # ==========================================
 # 页面配置
@@ -24,7 +25,6 @@ def load_model_assets(dataset_name):
         "ZVI": "model_assets_ZVI.pkl"
     }
     
-    # 自动探测路径：优先找 deploy_models 文件夹，其次找根目录
     path_in_folder = os.path.join("deploy_models", file_map[dataset_name])
     path_in_root = file_map[dataset_name]
     
@@ -43,7 +43,7 @@ def load_model_assets(dataset_name):
             assets = pickle.load(f)
         return assets
     except EOFError:
-        st.error("❌ EOFError: Model file corrupted. This usually happens if the .pkl file is too large and saved as a Git LFS pointer instead of the actual file.")
+        st.error("❌ EOFError: Model file corrupted. This usually happens if the .pkl file is saved as a Git LFS pointer.")
         return None
     except ModuleNotFoundError as e:
         st.error(f"❌ Missing required library: {e}. Please add it to requirements.txt.")
@@ -56,21 +56,18 @@ def load_model_assets(dataset_name):
 # 2. 交互式预测核心函数 (支持 3D 构象生成)
 # ==========================================
 def predict_smiles(smiles, env_values_dict, assets):
-    # 1. 生成基础 2D 分子（保留用于网页上画漂亮的平面图）
     mol_2d = Chem.MolFromSmiles(smiles)
     if mol_2d is None:
         return None, "Invalid SMILES"
     
-    # 2. 生成带有 3D 坐标的分子（用于底层 RDF 等 3D 特征计算）
     try:
-        mol_3d = Chem.AddHs(mol_2d) # 加氢
-        embed_res = AllChem.EmbedMolecule(mol_3d, randomSeed=42) # 嵌入 3D 坐标
+        mol_3d = Chem.AddHs(mol_2d)
+        embed_res = AllChem.EmbedMolecule(mol_3d, randomSeed=42)
         if embed_res == -1:
             return None, "Failed to generate 3D structure for this SMILES."
         
-        AllChem.MMFFOptimizeMolecule(mol_3d) # MMFF94 力场优化
+        AllChem.MMFFOptimizeMolecule(mol_3d)
         
-        # 满足特殊指纹包（如 mordred）的要求：显式赋予 conf_id 属性
         mol_3d.conf_id = 0
         if hasattr(mol_3d, 'SetIntProp'):
             mol_3d.SetIntProp("conf_id", 0)
@@ -81,7 +78,6 @@ def predict_smiles(smiles, env_values_dict, assets):
     base_preds = []
     top_fp_names = assets['top_fp_names']
     
-    # 计算基础模型预测值
     for fp_name in top_fp_names:
         processor = assets['base_models_processors'][fp_name]
         fp_calc = processor['fp_calculator']
@@ -90,7 +86,6 @@ def predict_smiles(smiles, env_values_dict, assets):
         model = processor['model']
         
         try:
-            # 注意：这里必须传入 mol_3d 进行计算
             fp_raw = fp_calc.transform([mol_3d])
             fp = np.asarray(fp_raw.toarray() if hasattr(fp_raw, "toarray") else fp_raw)
             fp_processed = imputer.transform(scaler.transform(fp))
@@ -99,15 +94,12 @@ def predict_smiles(smiles, env_values_dict, assets):
         except Exception as e:
             return None, f"Error calculating {fp_name}: {str(e)}"
     
-    # 合并环境特征
     env_features = [env_values_dict.get(name, 0.0) for name in assets['env_feature_names']]
     meta_input = np.array(base_preds + env_features).reshape(1, -1)
     
-    # Meta-model 最终预测
     meta_model = assets['meta_model']
     final_pred = meta_model.predict(meta_input)[0]
     
-    # 返回预测结果，同时返回没有氢原子的 2D 分子，以确保网页上的分子图清爽美观
     return final_pred, mol_2d
 
 # ==========================================
@@ -124,13 +116,10 @@ with col_left:
     dataset_choice = st.radio("Select Dataset Model", ["O3", "ZVI"], horizontal=True)
     st.button("Run Modeling Pipeline", disabled=True, help="Models are pre-trained for web deployment.")
     
-    # 加载选中的模型
     assets = load_model_assets(dataset_choice)
     
     st.header("Model Training Results")
     st.info("Static images (Heatmaps, Scatter plots) generated from local training can be displayed here.")
-    # 如果你有训练结果图片，可以取消下面这行的注释并修改路径
-    # st.image("results/performance_plot.png")
 
 # ------------- 右侧栏：预测与可视化 -------------
 with col_right:
@@ -141,13 +130,11 @@ with col_right:
         st.header("Interactive Analysis & Prediction")
         target_smiles = st.text_input("Enter Target Molecule SMILES", "CC(C)(C)C1=NN=C(S1)NC(=O)NC")
         
-        # 动态生成环境参数输入框
         env_inputs = {}
         if len(assets['env_feature_names']) > 0:
             st.write("Environmental Variables:")
             cols = st.columns(len(assets['env_feature_names']))
             for i, env_name in enumerate(assets['env_feature_names']):
-                # 默认值: pH给7.0, 其他给25.0
                 default_val = 7.0 if env_name.lower() == 'ph' else 25.0
                 env_inputs[env_name] = cols[i].number_input(env_name, value=default_val)
                 
@@ -157,7 +144,6 @@ with col_right:
                 if pred_value is not None:
                     c1, c2 = st.columns([1, 1])
                     with c1:
-                        # 画 2D 图
                         img = Draw.MolToImage(result_mol, size=(300, 300))
                         st.image(img, caption="2D Molecular Structure")
                     with c2:
@@ -168,7 +154,7 @@ with col_right:
 
         st.divider()
 
-        # --- 2. ECFP Atomic Contribution Visualization (SHAP 近似) ---
+        # --- 2. ECFP Atomic Contribution Visualization (彻底修复版) ---
         st.header("Molecular Interpretability (Atomic SHAP)")
         st.markdown("Visualizing atomic contributions using **ECFP (Morgan) Fingerprints** surrogate model.")
         
@@ -179,27 +165,40 @@ with col_right:
             if mol_shap:
                 with st.spinner("Calculating ECFP Atomic Contributions..."):
                     try:
-                        # 获取在本地训练的 ECFP 代理模型
                         if 'ecfp_surrogate' not in assets:
-                            st.warning("⚠️ ECFP Surrogate model not found in the .pkl file. "
-                                       "Atomic SHAP is disabled. Please ensure you ran the surrogate training step locally.")
+                            st.warning("⚠️ ECFP Surrogate model not found in the .pkl file.")
                         else:
                             ecfp_model = assets['ecfp_surrogate']
                             
-                            # 定义 RDKit SimilarityMaps 需要的回调预测函数
                             def get_pred_for_shap(fp_vect):
                                 fp_array = np.array(fp_vect).reshape(1, -1)
-                                return ecfp_model.predict(fp_array)[0]
+                                return float(ecfp_model.predict(fp_array)[0])
                             
-                            # 生成原子热力图
-                            fig, maxweight = SimilarityMaps.GetSimilarityMapForModel(
+                            # 步骤 A：单独计算每个原子的权重，不再调用旧版画图包
+                            weights = SimilarityMaps.GetAtomicWeightsForModel(
                                 mol_shap, 
                                 lambda m, i: SimilarityMaps.GetMorganFingerprint(m, atomId=i, radius=2, nBits=2048), 
-                                get_pred_for_shap, 
-                                colorMap='coolwarm' # 蓝红配色
+                                get_pred_for_shap
                             )
                             
-                            st.pyplot(fig)
+                            # 步骤 B：使用 RDKit 现代的高清 SVG 引擎进行渲染
+                            # 这样可以完全绕过 Matplotlib 的 MolToMPL 报错
+                            d2d = rdMolDraw2D.MolDraw2DSVG(450, 450)
+                            
+                            SimilarityMaps.GetSimilarityMapFromWeights(
+                                mol_shap, 
+                                weights, 
+                                colorMap='coolwarm', 
+                                draw2d=d2d
+                            )
+                            d2d.FinishDrawing()
+                            
+                            # 获取生成的 SVG 文本
+                            svg_text = d2d.GetDrawingText()
+                            
+                            # 在网页中渲染 SVG 图像
+                            components.html(svg_text, width=450, height=450)
+                            
                             st.markdown("""
                             **Interpretation Guide:**
                             * <span style='color:blue'>**Blue Areas**</span>: Atoms contributing **positively** to the prediction value.
