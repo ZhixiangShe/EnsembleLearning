@@ -160,7 +160,7 @@ else:
     if st.button("Generate Atomic Contribution Plot"):
         mol_shap = Chem.MolFromSmiles(shap_smiles)
         if mol_shap:
-            with st.spinner("Calculating ECFP Atomic Contributions..."):
+            with st.spinner("Calculating Atomic Contributions..."):
                 try:
                     if 'ecfp_surrogate' not in assets:
                         st.warning("⚠️ ECFP Surrogate model not found in the .pkl file.")
