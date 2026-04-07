@@ -4,6 +4,9 @@ import numpy as np
 import pickle
 import os
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+import matplotlib.colors as mcolors
+from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 import plotly.express as px
 import streamlit.components.v1 as components
 import xgboost as xgb
@@ -73,7 +76,7 @@ def predict_smiles(smiles, env_values_dict, assets):
     return assets['meta_model'].predict(meta_input)[0], mol_2d
 
 # ==========================================
-# 3. UI 布局 (模块 1-3)
+# 3. UI 布局 (模块 1-2)
 # ==========================================
 st.title("Ensemble Learning Platform for Advanced Treatments")
 st.markdown("An Ensemble Learning Framework for Pollutant Reactivity Prediction")
@@ -106,18 +109,128 @@ if assets is not None:
 
     st.divider()
 
+    # ==========================================
+    # 模块 3: 顶刊级分子解释性 (SHAP & Fragment)
+    # ==========================================
     st.header("Module 3: Molecular Interpretability")
-    shap_smiles = st.text_input("Enter SMILES for SHAP", target_smiles, key="shap_input")
-    if st.button("Generate Atomic Contribution Plot"):
+    shap_smiles = st.text_input("Enter SMILES for Interpretability Analysis", target_smiles, key="shap_input")
+    
+    if st.button("Generate Interpretability Plots"):
         mol_shap = Chem.MolFromSmiles(shap_smiles)
         if mol_shap and 'ecfp_surrogate' in assets:
-            with st.spinner("Calculating..."):
-                def get_pred_for_shap(fp_vect): return float(assets['ecfp_surrogate'].predict(np.array(fp_vect).reshape(1, -1))[0])
-                weights = SimilarityMaps.GetAtomicWeightsForModel(mol_shap, lambda m, i: SimilarityMaps.GetMorganFingerprint(m, atomId=i, radius=2, nBits=2048), get_pred_for_shap)
-                d2d = rdMolDraw2D.MolDraw2DSVG(450, 450)
-                SimilarityMaps.GetSimilarityMapFromWeights(mol_shap, weights, colorMap='coolwarm', draw2d=d2d)
-                d2d.FinishDrawing()
-                components.html(f"<div style='text-align: center;'>{d2d.GetDrawingText()}</div>", width=600, height=480)
+            with st.spinner("Analyzing Atomic & Fragment Contributions..."):
+                tab1, tab2 = st.tabs(["🔴🔵 Atomic Contribution Plot", "📊 Fragment Feature Importance"])
+                
+                # --- 子模块 1: 高清原子贡献图 (还原目标图 1) ---
+                with tab1:
+                    def get_pred_for_shap(fp_vect): 
+                        return float(assets['ecfp_surrogate'].predict(np.array(fp_vect).reshape(1, -1))[0])
+                    
+                    # 提取每个原子的权重
+                    weights = SimilarityMaps.GetAtomicWeightsForModel(
+                        mol_shap, 
+                        lambda m, i: SimilarityMaps.GetMorganFingerprint(m, atomId=i, radius=2, nBits=2048), 
+                        get_pred_for_shap
+                    )
+                    
+                    # 设置以0为中心的红蓝颜色映射 (Red-White-Blue)
+                    norm = mcolors.TwoSlopeNorm(vmin=min(weights)-1e-5, vcenter=0, vmax=max(weights)+1e-5)
+                    cmap = cm.get_cmap('bwr') # Blue-White-Red
+                    
+                    # 生成原子颜色字典
+                    atom_colors = {}
+                    for i, w in enumerate(weights):
+                        # 如果权重极小，则不着色
+                        if abs(w) > 1e-4:
+                            atom_colors[i] = cmap(norm(w))[:3]
+                            
+                    # 使用 rdMolDraw2D 绘制纯白底色高清图
+                    d2d = rdMolDraw2D.MolDraw2DSVG(500, 400)
+                    opts = d2d.drawOptions()
+                    opts.clearBackground = True
+                    opts.setBackgroundColour((1, 1, 1, 1)) # 纯白背景
+                    opts.highlightRadius = 0.4
+                    
+                    rdMolDraw2D.PrepareAndDrawMolecule(
+                        d2d, mol_shap, 
+                        highlightAtoms=list(atom_colors.keys()), 
+                        highlightAtomColors=atom_colors
+                    )
+                    d2d.FinishDrawing()
+                    
+                    # 渲染 SVG
+                    components.html(f"<div style='text-align: center;'>{d2d.GetDrawingText()}</div>", width=600, height=420)
+                    
+                    # 绘制对应的渐变色带 (Colorbar)
+                    fig_cb, ax_cb = plt.subplots(figsize=(6, 0.8))
+                    fig_cb.subplots_adjust(bottom=0.5)
+                    cb = plt.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), cax=ax_cb, orientation='horizontal')
+                    cb.set_label('SHAP Contribution (Negative vs Positive)', fontsize=10)
+                    st.pyplot(fig_cb)
+
+                # --- 子模块 2: 带有分子片段的柱状图 (还原目标图 2) ---
+                with tab2:
+                    # 获取该分子的 ECFP 激活位点 (BitInfo)
+                    bit_info = {}
+                    fp = AllChem.GetMorganFingerprintAsBitVect(mol_shap, radius=2, nBits=2048, bitInfo=bit_info)
+                    active_bits = list(bit_info.keys())
+                    
+                    # 使用局部扰动法 (Local Perturbation) 计算每个片段的贡献度
+                    base_pred = get_pred_for_shap(fp)
+                    bit_contributions = {}
+                    
+                    fp_arr = np.array(fp)
+                    for bit in active_bits:
+                        fp_mutated = fp_arr.copy()
+                        fp_mutated[bit] = 0 # 移除该特征
+                        mutated_pred = get_pred_for_shap(fp_mutated)
+                        # 贡献度 = 包含该特征的预测值 - 移除该特征的预测值
+                        bit_contributions[bit] = base_pred - mutated_pred
+                        
+                    # 提取贡献绝对值排名前 6 的片段
+                    top_bits = sorted(bit_contributions.keys(), key=lambda x: abs(bit_contributions[x]), reverse=True)[:6]
+                    
+                    if len(top_bits) > 0:
+                        top_vals = [bit_contributions[b] for b in top_bits]
+                        top_labels = [str(b) for b in top_bits]
+                        
+                        fig, ax = plt.subplots(figsize=(10, 6))
+                        
+                        # 绘制渐变蓝色柱状图
+                        bars = ax.bar(top_labels, top_vals, color='#5D98C8', width=0.5, edgecolor='white')
+                        
+                        # 在柱子上方/下方叠加片段图片
+                        for i, bit in enumerate(top_bits):
+                            try:
+                                # 渲染 RDKit 的局部片段图
+                                img = Draw.DrawMorganBit(mol_shap, bit, bit_info, useSVG=False)
+                                img_arr = np.array(img)
+                                
+                                # 将图片作为 Annotation 嵌入到 Matplotlib 中
+                                imagebox = OffsetImage(img_arr, zoom=0.5)
+                                # 根据柱子正负决定图片位置
+                                offset_y = max(abs(np.array(top_vals))) * 0.15
+                                y_pos = top_vals[i] + offset_y if top_vals[i] >= 0 else top_vals[i] - offset_y
+                                
+                                ab = AnnotationBbox(imagebox, (i, y_pos), frameon=False, pad=0)
+                                ax.add_artist(ab)
+                            except:
+                                pass
+                                
+                        ax.set_ylabel("Feature Importance (Contribution)")
+                        ax.set_xlabel("ECFP Feature (Bit ID)")
+                        ax.set_title("Top Substructure Contributions for Current Molecule")
+                        
+                        # 动态扩展 Y 轴范围以容纳图片
+                        y_min, y_max = min(top_vals), max(top_vals)
+                        ax.set_ylim(y_min - abs(y_min)*0.5 - 0.1, y_max + abs(y_max)*0.5 + 0.1)
+                        ax.axhline(0, color='black', linewidth=0.8, linestyle='--')
+                        ax.grid(axis='y', linestyle=':', alpha=0.7)
+                        
+                        st.pyplot(fig)
+                    else:
+                        st.warning("Molecule is too simple to generate fragment importance.")
+
 st.divider()
 
 # ==========================================
@@ -170,13 +283,13 @@ if uploaded_file is not None:
         selected_models = st.multiselect(
             "Select Base Models", 
             options=list(MODELS_DICT.keys()), 
-            default=["XGB", "RF", "KNN", "SVR"] # 默认选4个表现较好的
+            default=["XGB", "RF", "KNN", "SVR"]
         )
     with sel_c2:
         selected_fps = st.multiselect(
             "Select Fingerprints (Features)", 
             options=list(FP_DICT.keys()), 
-            default=["MACCS", "ECFP", "AtomPair_2D", "RDF_3D"] # 默认组合
+            default=["MACCS", "ECFP", "AtomPair_2D", "RDF_3D"]
         )
     
     if st.button("🚀 Start Full AutoML Pipeline", type="primary"):
@@ -185,10 +298,8 @@ if uploaded_file is not None:
         else:
             df_clean = df_custom.dropna(subset=[smi_col, tgt_col]).reset_index(drop=True)
             
-            # 智能判断是否需要进行 3D 构象优化
             need_3d = any("_3D" in fp for fp in selected_fps)
             
-            # 1. 构象生成与准备
             st.write(f"Step 1/5: Generating Molecular Conformers (3D Optimization: {need_3d})...")
             mols, valid_idx = [], []
             pb = st.progress(0)
@@ -211,16 +322,13 @@ if uploaded_file is not None:
             X_env = df_clean.iloc[valid_idx][env_cols].values if env_cols else None
             if X_env is not None: X_env = np.nan_to_num(X_env, nan=np.nanmean(X_env, axis=0))
             
-            # 划分为 80% 评估集(Train), 20% 测试集(Test)
             idx_train, idx_test = train_test_split(np.arange(len(y)), test_size=0.2, random_state=42)
             y_train, y_test = y[idx_train], y[idx_test]
             
-            # 2. 遍历计算热图矩阵
             st.write("Step 2/5: Calculating Features & Evaluating Combinations...")
             r2_matrix = pd.DataFrame(index=selected_models, columns=selected_fps)
             results_list = []
             
-            # 预先仅计算被选中的指纹
             fp_data_cache = {}
             for fp_name in selected_fps:
                 func = FP_DICT[fp_name]
@@ -240,7 +348,6 @@ if uploaded_file is not None:
                     X_all = fp_data_cache[f_name]
                     if X_all is not None:
                         try:
-                            # 训练与评估
                             X_tr, X_te = X_all[idx_train], X_all[idx_test]
                             model.fit(X_tr, y_train)
                             score = r2_score(y_test, model.predict(X_te))
@@ -251,7 +358,6 @@ if uploaded_file is not None:
                     task_count += 1
                     pb_eval.progress(task_count / total_tasks)
                     
-            # 3. 绘制交互式热图 (Plotly)
             st.write("Step 3/5: Interactive Performance Heatmap (Test $R^2$)")
             r2_matrix = r2_matrix.astype(float).fillna(0.0)
             fig_heat = px.imshow(r2_matrix, text_auto=".2f", aspect="auto", 
@@ -259,18 +365,14 @@ if uploaded_file is not None:
                                  title="Model vs Fingerprint Performance")
             st.plotly_chart(fig_heat, use_container_width=True)
             
-            # 4. 提取 Top 组合
             st.write("Step 4/5: Selecting Top Combinations for Stacking...")
             results_list.sort(key=lambda x: x[0], reverse=True)
-            
-            # 动态确定 Stacking 的基模型数量 (最多3个，如果组合不足3个则取全部)
             top_k = min(3, len(results_list))
             top_combinations = results_list[:top_k]
             
             for i, (score, m_name, f_name) in enumerate(top_combinations):
                 st.success(f"🏅 Rank {i+1}: **{m_name}** with **{f_name}** (Base $R^2$: {score:.3f})")
                 
-            # 5. Stacking 5-Fold CV
             st.write(f"Step 5/5: Training Stacking Meta-Model with Top {top_k} Base Models...")
             
             meta_X_train = np.zeros((len(y_train), top_k))
@@ -282,25 +384,20 @@ if uploaded_file is not None:
                 X_fp = fp_data_cache[f_name]
                 X_tr, X_te = X_fp[idx_train], X_fp[idx_test]
                 
-                # OOF 预测生成训练集 Meta-特征
                 meta_X_train[:, i] = cross_val_predict(base_model, X_tr, y_train, cv=kf)
-                # 全量拟合后预测测试集 Meta-特征
                 base_model.fit(X_tr, y_train)
                 meta_X_test[:, i] = base_model.predict(X_te)
                 
-            # 拼接环境参数
             if X_env is not None:
                 meta_X_train = np.hstack((meta_X_train, X_env[idx_train]))
                 meta_X_test = np.hstack((meta_X_test, X_env[idx_test]))
                 
-            # 顶层 Meta 模型拟合 (固定使用 XGBoost)
             meta_model = xgb.XGBRegressor(n_estimators=100, learning_rate=0.05, random_state=42)
             meta_model.fit(meta_X_train, y_train)
             
             y_pred_tr = meta_model.predict(meta_X_train)
             y_pred_te = meta_model.predict(meta_X_test)
             
-            # 指标计算与展示
             st.subheader("Final Stacking Ensemble Results")
             m_c1, m_c2, m_c3, m_c4 = st.columns(4)
             m_c1.metric("Train R²", f"{r2_score(y_train, y_pred_tr):.3f}")
@@ -308,7 +405,6 @@ if uploaded_file is not None:
             m_c3.metric("Test RMSE", f"{np.sqrt(mean_squared_error(y_test, y_pred_te)):.3f}")
             m_c4.metric("Test MAE", f"{mean_absolute_error(y_test, y_pred_te):.3f}")
             
-            # 最终散点拟合图 (Matplotlib)
             fig_scatter, ax = plt.subplots(figsize=(6, 5))
             ax.scatter(y_train, y_pred_tr, alpha=0.5, label='Train (OOF)', color='#4C72B0')
             ax.scatter(y_test, y_pred_te, alpha=0.7, label='Test', color='#DD8452')
