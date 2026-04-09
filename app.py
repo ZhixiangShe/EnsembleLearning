@@ -33,7 +33,7 @@ from sklearn.svm import SVR
 st.set_page_config(page_title="Ensemble Learning Platform for Advanced Treatments", layout="centered")
 
 # ==========================================
-# 1. 加载预训练模型 (模块 1)
+# 1. 加载预训练模型 (模块 1) - 增加了详细错误捕捉
 # ==========================================
 @st.cache_resource(show_spinner="Loading model files...")
 def load_model_assets(dataset_name):
@@ -43,10 +43,15 @@ def load_model_assets(dataset_name):
     
     target_path = path_in_folder if os.path.exists(path_in_folder) else path_in_root if os.path.exists(path_in_root) else None
         
-    if target_path is None: return None
+    if target_path is None: 
+        return None, "File not found"
+        
     try:
-        with open(target_path, 'rb') as f: return pickle.load(f)
-    except: return None
+        with open(target_path, 'rb') as f: 
+            return pickle.load(f), "Success"
+    except Exception as e:
+        # 将真实的错误捕捉下来
+        return None, f"Failed to load `{target_path}`. Error details: {str(e)}"
 
 # ==========================================
 # 2. 预训练模型预测核心
@@ -85,13 +90,21 @@ st.divider()
 
 st.header("Module 1: Built-in Model Configuration")
 dataset_choice = st.radio("Select Pre-trained Dataset Model", ["O3", "ZVI"], horizontal=True)
-assets = load_model_assets(dataset_choice)
+
+# 获取模型和状态信息
+assets, load_status = load_model_assets(dataset_choice)
 st.divider()
 
-# 修改点：加入找不到模型文件时的明确提示，而不是默默隐藏
+# ==========================================
+# 关键修改：显示具体的报错原因
+# ==========================================
 if assets is None:
-    st.error(f"⚠️ Missing Model Files: Cannot find the pre-trained model for `{dataset_choice}`.")
-    st.info(f"💡 Solution: Please ensure `model_assets_{dataset_choice}.pkl` exists in the current directory or inside a `deploy_models` folder. If deployed on Streamlit Cloud, make sure the `.pkl` files are committed and pushed to your GitHub repository! Module 2 & 3 are temporarily disabled.")
+    if load_status == "File not found":
+        st.error(f"⚠️ Missing Model Files: Cannot find `model_assets_{dataset_choice}.pkl`.")
+    else:
+        st.error("⚠️ Model file exists, but failed to load!")
+        st.error(f"**Error Message:** {load_status}")
+        st.info("💡 **Diagnosis:** If you see `ModuleNotFoundError` or `UnpicklingError`, it means the versions of `scikit-learn` or `xgboost` in your `requirements.txt` are different from the versions on your local PC when you created the .pkl file. Please strictly match the library versions in `requirements.txt`.")
 else:
     st.header("Module 2: Interactive Prediction")
     target_smiles = st.text_input("Enter Target Molecule SMILES", "CC(C)(C)C1=NN=C(S1)NC(=O)NC")
@@ -115,7 +128,7 @@ else:
     st.divider()
 
     # ==========================================
-    # 模块 3: 顶刊级分子解释性 (同时渲染两张图)
+    # 模块 3: 顶刊级分子解释性
     # ==========================================
     st.header("Module 3: Molecular Interpretability")
     shap_smiles = st.text_input("Enter SMILES for Interpretability Analysis", target_smiles, key="shap_input")
@@ -137,7 +150,7 @@ else:
                 )
                 
                 norm = mcolors.TwoSlopeNorm(vmin=min(weights)-1e-5, vcenter=0, vmax=max(weights)+1e-5)
-                cmap = plt.get_cmap('bwr') # 修改了弃用的方法
+                cmap = plt.get_cmap('bwr')
                 
                 atom_colors = {}
                 for i, w in enumerate(weights):
@@ -165,7 +178,7 @@ else:
                 cb.set_label('SHAP Contribution (Negative vs Positive)', fontsize=10)
                 st.pyplot(fig_cb)
                 
-                st.markdown("<br>", unsafe_allow_html=True) # 增加间距
+                st.markdown("<br>", unsafe_allow_html=True)
 
                 # --- 图 2: 带有分子片段的柱状图 ---
                 st.subheader("📊 Fragment Feature Importance")
@@ -183,11 +196,9 @@ else:
                     fp_mutated[bit] = 0
                     mutated_pred = get_pred_for_shap(fp_mutated)
                     contrib = base_pred - mutated_pred
-                    # 过滤掉几乎为0的特征，让图表更干净
                     if abs(contrib) > 1e-4:
                         bit_contributions[bit] = contrib
                     
-                # 提取排名前 6 的片段
                 top_bits = sorted(bit_contributions.keys(), key=lambda x: abs(bit_contributions[x]), reverse=True)[:6]
                 
                 if len(top_bits) > 0:
@@ -197,31 +208,24 @@ else:
                     fig, ax = plt.subplots(figsize=(10, 6))
                     bars = ax.bar(top_labels, top_vals, color='#5D98C8', width=0.4, edgecolor='white')
                     
-                    # === 动态且宽裕的 Y 轴范围计算 (解决图片被裁剪的核心) ===
                     y_max = max(max(top_vals), 0)
                     y_min = min(min(top_vals), 0)
                     y_range = y_max - y_min if (y_max - y_min) > 0 else 0.1
                     
-                    # 强行给 Y 轴顶部和底部预留 50% 的空间放图片
                     ax.set_ylim(y_min - y_range * 0.5, y_max + y_range * 0.5)
                     
                     for i, bit in enumerate(top_bits):
                         try:
-                            # 渲染片段图像
                             img = Draw.DrawMorganBit(mol_shap, int(bit), bit_info, useSVG=False)
                             if img is not None:
                                 img_rgb = img.convert('RGB')
                                 img_arr = np.array(img_rgb)
                                 
-                                # 加入图片框，zoom 缩放比例
                                 imagebox = OffsetImage(img_arr, zoom=0.6)
-                                
-                                # 根据柱子是正还是负，决定图片浮动的位置
                                 sign = 1 if top_vals[i] >= 0 else -1
-                                offset = y_range * 0.15 # 距离柱顶 15% 的空隙
+                                offset = y_range * 0.15
                                 y_pos = top_vals[i] + (sign * offset)
                                 
-                                # bboxprops 增加了一个带阴影的圆角方框，让图片非常清晰
                                 ab = AnnotationBbox(
                                     imagebox, (i, y_pos), 
                                     frameon=True, 
