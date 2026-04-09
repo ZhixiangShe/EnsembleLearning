@@ -6,3 +6,4 @@ xgboost
 rdkit-pypi
 matplotlib
 plotly
+scikit-fingerprints
