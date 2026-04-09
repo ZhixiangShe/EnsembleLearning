@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 import pickle
 import os
-import io
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
@@ -34,42 +33,7 @@ from sklearn.svm import SVR
 st.set_page_config(page_title="Ensemble Learning Platform for Advanced Treatments", layout="centered")
 
 # ==========================================
-# 工具函数：绝对可靠的分子片段图像提取器 (防止图3画不出)
-# ==========================================
-def get_robust_bit_image_array(mol, bit, bit_info):
-    try:
-        img = Draw.DrawMorganBit(mol, int(bit), bit_info, useSVG=False)
-        if hasattr(img, 'convert'):
-            return np.array(img.convert('RGB'))
-    except:
-        pass
-        
-    try:
-        atomId, radius = bit_info[bit][0]
-        if radius > 0:
-            env = Chem.FindAtomEnvironmentOfRadiusN(mol, radius, atomId)
-            amap = {}
-            submol = Chem.PathToSubmol(mol, env, atomMap=amap)
-            h_atoms = [amap[atomId]] if atomId in amap else []
-        else:
-            submol = Chem.RWMol()
-            submol.AddAtom(mol.GetAtomWithIdx(atomId))
-            h_atoms = [0]
-            
-        d2d = rdMolDraw2D.MolDraw2DAGG(150, 150)
-        opts = d2d.drawOptions()
-        opts.clearBackground = True
-        opts.setBackgroundColour((1, 1, 1, 1))
-        d2d.DrawMolecule(submol, highlightAtoms=h_atoms)
-        d2d.FinishDrawing()
-        
-        img_bytes = d2d.GetDrawingText()
-        return np.array(Image.open(io.BytesIO(img_bytes)).convert('RGB'))
-    except Exception as e:
-        return None
-
-# ==========================================
-# 1. 加载预训练模型 (带错误追踪的加强版)
+# 1. 加载预训练模型 (模块 1)
 # ==========================================
 @st.cache_resource(show_spinner="Loading model files...")
 def load_model_assets(dataset_name):
@@ -79,20 +43,10 @@ def load_model_assets(dataset_name):
     
     target_path = path_in_folder if os.path.exists(path_in_folder) else path_in_root if os.path.exists(path_in_root) else None
         
-    # 如果找不到文件，直接在网页上爆红提示！
-    if target_path is None:
-        st.error(f"🚨 File Not Found: 服务器找不到文件 `{file_map[dataset_name]}`！请检查 GitHub 仓库。")
-        return None
-        
+    if target_path is None: return None
     try:
-        with open(target_path, 'rb') as f: 
-            return pickle.load(f)
-    except Exception as e: 
-        # 如果读取失败（如 LFS 问题），直接在网页打印报错信息！
-        st.error(f"🚨 Model Load Error: 找到了文件 `{target_path}`，但是加载失败！")
-        st.error(f"**错误详情:** {str(e)}")
-        st.warning("💡 提示：如果是 `EOFError` 或 `unpickling error`，极有可能是因为模型超过 100MB，使用了 GitHub LFS，但 Streamlit 没有正确下载它（只下载了文本指针）。")
-        return None
+        with open(target_path, 'rb') as f: return pickle.load(f)
+    except: return None
 
 # ==========================================
 # 2. 预训练模型预测核心
@@ -123,7 +77,7 @@ def predict_smiles(smiles, env_values_dict, assets):
     return assets['meta_model'].predict(meta_input)[0], mol_2d
 
 # ==========================================
-# 3. UI 布局 (模块 1-3)
+# 3. UI 布局 (模块 1-2)
 # ==========================================
 st.title("Ensemble Learning Platform for Advanced Treatments")
 st.markdown("An Ensemble Learning Framework for Pollutant Reactivity Prediction")
@@ -134,7 +88,11 @@ dataset_choice = st.radio("Select Pre-trained Dataset Model", ["O3", "ZVI"], hor
 assets = load_model_assets(dataset_choice)
 st.divider()
 
-if assets is not None:
+# 修改点：加入找不到模型文件时的明确提示，而不是默默隐藏
+if assets is None:
+    st.error(f"⚠️ Missing Model Files: Cannot find the pre-trained model for `{dataset_choice}`.")
+    st.info(f"💡 Solution: Please ensure `model_assets_{dataset_choice}.pkl` exists in the current directory or inside a `deploy_models` folder. If deployed on Streamlit Cloud, make sure the `.pkl` files are committed and pushed to your GitHub repository! Module 2 & 3 are temporarily disabled.")
+else:
     st.header("Module 2: Interactive Prediction")
     target_smiles = st.text_input("Enter Target Molecule SMILES", "CC(C)(C)C1=NN=C(S1)NC(=O)NC")
     env_inputs = {}
@@ -157,7 +115,7 @@ if assets is not None:
     st.divider()
 
     # ==========================================
-    # 模块 3: 顶刊级分子解释性
+    # 模块 3: 顶刊级分子解释性 (同时渲染两张图)
     # ==========================================
     st.header("Module 3: Molecular Interpretability")
     shap_smiles = st.text_input("Enter SMILES for Interpretability Analysis", target_smiles, key="shap_input")
@@ -179,7 +137,7 @@ if assets is not None:
                 )
                 
                 norm = mcolors.TwoSlopeNorm(vmin=min(weights)-1e-5, vcenter=0, vmax=max(weights)+1e-5)
-                cmap = cm.get_cmap('bwr')
+                cmap = plt.get_cmap('bwr') # 修改了弃用的方法
                 
                 atom_colors = {}
                 for i, w in enumerate(weights):
@@ -207,7 +165,7 @@ if assets is not None:
                 cb.set_label('SHAP Contribution (Negative vs Positive)', fontsize=10)
                 st.pyplot(fig_cb)
                 
-                st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown("<br>", unsafe_allow_html=True) # 增加间距
 
                 # --- 图 2: 带有分子片段的柱状图 ---
                 st.subheader("📊 Fragment Feature Importance")
@@ -225,9 +183,11 @@ if assets is not None:
                     fp_mutated[bit] = 0
                     mutated_pred = get_pred_for_shap(fp_mutated)
                     contrib = base_pred - mutated_pred
+                    # 过滤掉几乎为0的特征，让图表更干净
                     if abs(contrib) > 1e-4:
                         bit_contributions[bit] = contrib
                     
+                # 提取排名前 6 的片段
                 top_bits = sorted(bit_contributions.keys(), key=lambda x: abs(bit_contributions[x]), reverse=True)[:6]
                 
                 if len(top_bits) > 0:
@@ -237,34 +197,44 @@ if assets is not None:
                     fig, ax = plt.subplots(figsize=(10, 6))
                     bars = ax.bar(top_labels, top_vals, color='#5D98C8', width=0.4, edgecolor='white')
                     
+                    # === 动态且宽裕的 Y 轴范围计算 (解决图片被裁剪的核心) ===
                     y_max = max(max(top_vals), 0)
                     y_min = min(min(top_vals), 0)
                     y_range = y_max - y_min if (y_max - y_min) > 0 else 0.1
                     
+                    # 强行给 Y 轴顶部和底部预留 50% 的空间放图片
                     ax.set_ylim(y_min - y_range * 0.5, y_max + y_range * 0.5)
                     
                     for i, bit in enumerate(top_bits):
-                        # 换回强大无敌的图片生成器
-                        img_arr = get_robust_bit_image_array(mol_shap, int(bit), bit_info)
-                        
-                        if img_arr is not None:
-                            imagebox = OffsetImage(img_arr, zoom=0.6)
-                            sign = 1 if top_vals[i] >= 0 else -1
-                            offset = y_range * 0.15 
-                            y_pos = top_vals[i] + (sign * offset)
-                            
-                            ab = AnnotationBbox(
-                                imagebox, (i, y_pos), 
-                                frameon=True, 
-                                zorder=10,
-                                bboxprops=dict(edgecolor='gray', boxstyle='round,pad=0.2', facecolor='white', alpha=0.9)
-                            )
-                            ax.add_artist(ab)
+                        try:
+                            # 渲染片段图像
+                            img = Draw.DrawMorganBit(mol_shap, int(bit), bit_info, useSVG=False)
+                            if img is not None:
+                                img_rgb = img.convert('RGB')
+                                img_arr = np.array(img_rgb)
+                                
+                                # 加入图片框，zoom 缩放比例
+                                imagebox = OffsetImage(img_arr, zoom=0.6)
+                                
+                                # 根据柱子是正还是负，决定图片浮动的位置
+                                sign = 1 if top_vals[i] >= 0 else -1
+                                offset = y_range * 0.15 # 距离柱顶 15% 的空隙
+                                y_pos = top_vals[i] + (sign * offset)
+                                
+                                # bboxprops 增加了一个带阴影的圆角方框，让图片非常清晰
+                                ab = AnnotationBbox(
+                                    imagebox, (i, y_pos), 
+                                    frameon=True, 
+                                    bboxprops=dict(edgecolor='gray', boxstyle='round,pad=0.2', facecolor='white', alpha=0.9)
+                                )
+                                ax.add_artist(ab)
+                        except Exception as e:
+                            pass
                             
                     ax.set_ylabel("Feature Importance (Contribution)")
                     ax.set_xlabel("ECFP Feature (Bit ID)")
                     ax.axhline(0, color='black', linewidth=1.0, linestyle='--')
-                    ax.grid(axis='y', linestyle=':', alpha=0.7, zorder=0)
+                    ax.grid(axis='y', linestyle=':', alpha=0.7)
                     
                     st.pyplot(fig)
                 else:
@@ -352,4 +322,105 @@ if uploaded_file is not None:
                         mols.append(mol)
                         valid_idx.append(i)
                     except: pass
-                if i % 10 == 0: pb.progress(
+                if i % 10 == 0: pb.progress(min(1.0, i/len(df_clean)))
+                
+            y = df_clean.iloc[valid_idx][tgt_col].values
+            X_env = df_clean.iloc[valid_idx][env_cols].values if env_cols else None
+            if X_env is not None: X_env = np.nan_to_num(X_env, nan=np.nanmean(X_env, axis=0))
+            
+            idx_train, idx_test = train_test_split(np.arange(len(y)), test_size=0.2, random_state=42)
+            y_train, y_test = y[idx_train], y[idx_test]
+            
+            st.write("Step 2/5: Calculating Features & Evaluating Combinations...")
+            r2_matrix = pd.DataFrame(index=selected_models, columns=selected_fps)
+            results_list = []
+            
+            fp_data_cache = {}
+            for fp_name in selected_fps:
+                func = FP_DICT[fp_name]
+                try:
+                    raw_fp = np.array([func(m) for m in mols])
+                    fp_data_cache[fp_name] = StandardScaler().fit_transform(raw_fp)
+                except Exception as e:
+                    fp_data_cache[fp_name] = None
+            
+            total_tasks = len(selected_models) * len(selected_fps)
+            task_count = 0
+            pb_eval = st.progress(0)
+            
+            for m_name in selected_models:
+                model = MODELS_DICT[m_name]
+                for f_name in selected_fps:
+                    X_all = fp_data_cache[f_name]
+                    if X_all is not None:
+                        try:
+                            X_tr, X_te = X_all[idx_train], X_all[idx_test]
+                            model.fit(X_tr, y_train)
+                            score = r2_score(y_test, model.predict(X_te))
+                            r2_matrix.loc[m_name, f_name] = score
+                            results_list.append((score, m_name, f_name))
+                        except:
+                            r2_matrix.loc[m_name, f_name] = -1.0
+                    task_count += 1
+                    pb_eval.progress(task_count / total_tasks)
+                    
+            st.write("Step 3/5: Interactive Performance Heatmap (Test $R^2$)")
+            r2_matrix = r2_matrix.astype(float).fillna(0.0)
+            fig_heat = px.imshow(r2_matrix, text_auto=".2f", aspect="auto", 
+                                 color_continuous_scale="RdBu_r", 
+                                 title="Model vs Fingerprint Performance")
+            st.plotly_chart(fig_heat, use_container_width=True)
+            
+            st.write("Step 4/5: Selecting Top Combinations for Stacking...")
+            results_list.sort(key=lambda x: x[0], reverse=True)
+            top_k = min(3, len(results_list))
+            top_combinations = results_list[:top_k]
+            
+            for i, (score, m_name, f_name) in enumerate(top_combinations):
+                st.success(f"🏅 Rank {i+1}: **{m_name}** with **{f_name}** (Base $R^2$: {score:.3f})")
+                
+            st.write(f"Step 5/5: Training Stacking Meta-Model with Top {top_k} Base Models...")
+            
+            meta_X_train = np.zeros((len(y_train), top_k))
+            meta_X_test = np.zeros((len(y_test), top_k))
+            kf = KFold(n_splits=5, shuffle=True, random_state=42)
+            
+            for i, (score, m_name, f_name) in enumerate(top_combinations):
+                base_model = MODELS_DICT[m_name]
+                X_fp = fp_data_cache[f_name]
+                X_tr, X_te = X_fp[idx_train], X_fp[idx_test]
+                
+                meta_X_train[:, i] = cross_val_predict(base_model, X_tr, y_train, cv=kf)
+                base_model.fit(X_tr, y_train)
+                meta_X_test[:, i] = base_model.predict(X_te)
+                
+            if X_env is not None:
+                meta_X_train = np.hstack((meta_X_train, X_env[idx_train]))
+                meta_X_test = np.hstack((meta_X_test, X_env[idx_test]))
+                
+            meta_model = xgb.XGBRegressor(n_estimators=100, learning_rate=0.05, random_state=42)
+            meta_model.fit(meta_X_train, y_train)
+            
+            y_pred_tr = meta_model.predict(meta_X_train)
+            y_pred_te = meta_model.predict(meta_X_test)
+            
+            st.subheader("Final Stacking Ensemble Results")
+            m_c1, m_c2, m_c3, m_c4 = st.columns(4)
+            m_c1.metric("Train R²", f"{r2_score(y_train, y_pred_tr):.3f}")
+            m_c2.metric("Test R²", f"{r2_score(y_test, y_pred_te):.3f}")
+            m_c3.metric("Test RMSE", f"{np.sqrt(mean_squared_error(y_test, y_pred_te)):.3f}")
+            m_c4.metric("Test MAE", f"{mean_absolute_error(y_test, y_pred_te):.3f}")
+            
+            fig_scatter, ax = plt.subplots(figsize=(6, 5))
+            ax.scatter(y_train, y_pred_tr, alpha=0.5, label='Train (OOF)', color='#4C72B0')
+            ax.scatter(y_test, y_pred_te, alpha=0.7, label='Test', color='#DD8452')
+            min_v = min(min(y), min(y_pred_tr), min(y_pred_te))
+            max_v = max(max(y), max(y_pred_tr), max(y_pred_te))
+            ax.plot([min_v, max_v], [min_v, max_v], 'k--', lw=2, label='Ideal')
+            ax.set_xlabel(f"Actual {tgt_col}")
+            ax.set_ylabel(f"Predicted {tgt_col}")
+            ax.set_title("Stacking Ensemble: Actual vs Predicted")
+            ax.legend()
+            ax.grid(True, linestyle=':', alpha=0.7)
+            
+            st.pyplot(fig_scatter)
